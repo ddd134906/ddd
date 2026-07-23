@@ -8,7 +8,7 @@ dep_var <- args[2]
 ind_vars <- strsplit(args[3], ",")[[1]]
 output_file <- args[4]
 
-cat("\n========== 成对删除 OLS（SPSS 精确版：总样本协方差）==========\n")
+cat("\n========== 成对删除 OLS（完全匹配 SPSS）==========\n")
 cat("数据文件:", data_file, "\n")
 cat("因变量:", dep_var, "\n")
 cat("自变量:", paste(ind_vars, collapse=", "), "\n")
@@ -27,37 +27,36 @@ k <- length(ind_vars)
 cat("总样本量 (n_total):", n_total, "\n")
 cat("因变量有效样本 (n_eff):", n_eff, "\n")
 
-# 子样本
+# ---- 子样本（用于 Sxy, Syy, 均值 y, 残差） ----
 sub_data <- data[valid_y, ]
-y <- sub_data[[dep_var]]
+y_sub <- sub_data[[dep_var]]
 X_sub <- as.matrix(sub_data[, ind_vars])
 
-# 子样本协方差（用于系数和R²）
-Sxx_sub <- cov(X_sub)
-Sxy <- cov(X_sub, y)
-var_y <- var(y)
-x_means_sub <- colMeans(X_sub)
-y_mean <- mean(y)
+# ---- 总样本（用于 Sxx, 均值 x） ----
+X_total <- as.matrix(data[, ind_vars])
+x_means_total <- colMeans(X_total)
+y_mean_sub <- mean(y_sub)
 
-# 回归系数
-beta <- solve(Sxx_sub, Sxy)
-intercept <- y_mean - sum(x_means_sub * beta)
+# 协方差矩阵
+Sxx <- cov(X_total)                 # 全部样本（自变量无缺失）
+Sxy <- cov(X_sub, y_sub)            # 子样本
+Syy <- var(y_sub)
+
+# 系数
+beta <- solve(Sxx, Sxy)
+intercept <- y_mean_sub - sum(x_means_total * beta)
 coefs <- c(intercept, beta)
 names(coefs) <- c("const", ind_vars)
 
-# 残差与 MSE（子样本）
-pred <- cbind(1, X_sub) %*% coefs
-res <- y - pred
-MSE <- sum(res^2) / (n_eff - k - 1)
+# 残差与 MSE（基于子样本）
+pred_sub <- cbind(1, X_sub) %*% coefs
+res_sub <- y_sub - pred_sub
+MSE <- sum(res_sub^2) / (n_eff - k - 1)
 
-# --- 标准误：使用总样本协方差 ---
-X_total <- as.matrix(data[, ind_vars])   # 总样本（自变量无缺失）
-Sxx_total <- cov(X_total)
-Sxx_total_inv <- solve(Sxx_total)
-
-se_beta <- sqrt(MSE * diag(Sxx_total_inv) / (n_eff - 1))
-x_means_total <- colMeans(X_total)
-se_intercept <- sqrt(MSE * (1/n_eff + x_means_total %*% Sxx_total_inv %*% x_means_total / (n_eff - 1)))
+# 标准误（使用 Sxx 和 n_eff-1）
+Sxx_inv <- solve(Sxx)
+se_beta <- sqrt(MSE * diag(Sxx_inv) / (n_eff - 1))
+se_intercept <- sqrt(MSE * (1/n_eff + x_means_total %*% Sxx_inv %*% x_means_total / (n_eff - 1)))
 se <- c(se_intercept, se_beta)
 names(se) <- c("const", ind_vars)
 
@@ -68,15 +67,15 @@ pvals <- 2 * pt(-abs(tvals), df = df)
 ci_lower <- coefs - qt(0.975, df) * se
 ci_upper <- coefs + qt(0.975, df) * se
 
-# 标准化系数（基于子样本方差）
-y_sd <- sqrt(var_y)
-x_sd <- sqrt(diag(Sxx_sub))
+# 标准化系数 Beta
+y_sd <- sqrt(Syy)
+x_sd <- sqrt(diag(Sxx))
 beta_std <- beta * (x_sd / y_sd)
 beta_std_full <- c(NA, beta_std)
 names(beta_std_full) <- c("const", ind_vars)
 
-# 模型统计量（R²使用子样本协方差）
-R2 <- as.numeric(t(beta) %*% Sxx_sub %*% beta / var_y)
+# 模型统计量
+R2 <- as.numeric(t(beta) %*% Sxx %*% beta / Syy)
 adj_R2 <- 1 - (1 - R2) * (n_eff - 1) / (n_eff - k - 1)
 f_stat <- (R2 / k) / ((1 - R2) / (n_eff - k - 1))
 f_pvalue <- pf(f_stat, k, n_eff - k - 1, lower.tail = FALSE)
