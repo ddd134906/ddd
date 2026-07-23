@@ -101,23 +101,27 @@ def _pairwise_regression_with_r(df, dep_var, ind_vars):
     if not os.path.exists(stats_path):
         raise FileNotFoundError(f"统计量文件未生成: {stats_path}")
 
-    # 读取结果（R 脚本现在输出 variable 列）
+    # 读取结果，并替换 Inf 为 NaN
     res_df = pd.read_csv(coef_path)
     stats_df = pd.read_csv(stats_path)
 
-    # 直接使用 variable 列作为索引
-    coeff = pd.Series(res_df['coef'].values, index=res_df['variable'])
-    bse = pd.Series(res_df['se'].values, index=res_df['variable'])
-    tvals = pd.Series(res_df['t'].values, index=res_df['variable'])
-    pvals = pd.Series(res_df['p'].values, index=res_df['variable'])
-    ci_low = pd.Series(res_df['ci_lower'].values, index=res_df['variable'])
-    ci_up = pd.Series(res_df['ci_upper'].values, index=res_df['variable'])
-    beta = pd.Series(res_df['beta'].values, index=res_df['variable'])
+    # 替换 Inf 和 -Inf 为 NaN（防止写入 Excel 报错）
+    res_df = res_df.replace([np.inf, -np.inf], np.nan)
+    stats_df = stats_df.replace([np.inf, -np.inf], np.nan)
+
+    # 构建 Series，如果某列全为 NaN，则填充 NaN
+    coeff = pd.Series(res_df['coef'].values, index=res_df['variable']).fillna(np.nan)
+    bse = pd.Series(res_df['se'].values, index=res_df['variable']).fillna(np.nan)
+    tvals = pd.Series(res_df['t'].values, index=res_df['variable']).fillna(np.nan)
+    pvals = pd.Series(res_df['p'].values, index=res_df['variable']).fillna(np.nan)
+    ci_low = pd.Series(res_df['ci_lower'].values, index=res_df['variable']).fillna(np.nan)
+    ci_up = pd.Series(res_df['ci_upper'].values, index=res_df['variable']).fillna(np.nan)
+    beta = pd.Series(res_df['beta'].values, index=res_df['variable']).fillna(np.nan)
 
     results = {
         'R_squared': stats_df['r2'].iloc[0],
         'adj_R_squared': stats_df['adj_r2'].iloc[0],
-        'R': np.sqrt(stats_df['r2'].iloc[0]),
+        'R': np.sqrt(stats_df['r2'].iloc[0]) if stats_df['r2'].iloc[0] >= 0 else np.nan,
         'std_error': stats_df['std_error'].iloc[0],
         'fvalue': stats_df['f_value'].iloc[0],
         'f_pvalue': stats_df['f_pvalue'].iloc[0],
@@ -132,13 +136,18 @@ def _pairwise_regression_with_r(df, dep_var, ind_vars):
         'var_names': list(coeff.index)
     }
 
+    # 打印部分结果以便验证
+    print(f"【R成对删除】结果 - R²: {results['R_squared']:.6f}, 调整R²: {results['adj_R_squared']:.6f}")
+    print(f"【R成对删除】系数 (前5个):")
+    for var, coef in results['coeff'].head().items():
+        print(f"  {var}: {coef:.6f}")
+
     # 清理临时文件
     os.unlink(data_path)
     os.unlink(coef_path)
     os.unlink(stats_path)
 
     return results
-
 
 def run_regression(df, dep_vars, ind_vars, weight_var=None, center=False,
                    pairwise=False, add_constant=True):
