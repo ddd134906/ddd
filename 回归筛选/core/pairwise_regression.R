@@ -1,23 +1,43 @@
 #!/usr/bin/env Rscript
 args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 4) {
+    stop("用法: Rscript pairwise_regression.R <数据文件.csv> <因变量> <自变量列表(逗号分隔)> <输出文件.csv>")
+}
 data_file <- args[1]
 dep_var <- args[2]
 ind_vars <- strsplit(args[3], ",")[[1]]
 output_file <- args[4]
 
-library(lavaan)
+# 加载包
+if (!require(lavaan)) {
+    install.packages("lavaan", repos = "http://cran.r-project.org")
+    library(lavaan)
+}
 
+# 读取数据
 data <- read.csv(data_file)
+
+# 打印数据摘要（调试）
+cat("数据维度:", dim(data), "\n")
+cat("因变量:", dep_var, "\n")
+cat("自变量:", paste(ind_vars, collapse=", "), "\n")
+
+# 计算成对协方差矩阵
+cov_matrix <- cov(data, use = "pairwise.complete.obs")
+cat("协方差矩阵维度:", dim(cov_matrix), "\n")
 
 # 构建公式
 formula <- paste(dep_var, "~", paste(ind_vars, collapse = " + "))
+cat("模型公式:", formula, "\n")
 
-# 成对协方差矩阵
-cov_matrix <- cov(data, use = "pairwise.complete.obs")
-
-# 拟合
+# 拟合模型（使用协方差矩阵）
 fit <- sem(formula, sample.cov = cov_matrix, sample.nobs = nrow(data),
            estimator = "ML", test = "standard")
+
+# 检查拟合是否成功
+if (is.null(fit)) {
+    stop("lavaan 拟合失败")
+}
 
 # 提取未标准化结果
 est <- parameterEstimates(fit)
@@ -55,12 +75,11 @@ ci_upper_intercept <- est$ci.upper[est$op == "~1"]
 names(ci_upper_intercept) <- "const"
 ci_upper <- c(ci_upper_intercept, ci_upper)
 
-# t值（用系数/标准误）
+# t值
 tvals <- coefs / se
 
-# 标准化系数（从 standardizedSolution 提取）
+# 标准化系数
 std_sol <- standardizedSolution(fit)
-# 提取回归系数（op=="~"）和截距（op=="~1"）的标准化估计
 beta_std <- std_sol$est.std[std_sol$op == "~"]
 names(beta_std) <- std_sol$rhs[std_sol$op == "~"]
 beta_intercept <- std_sol$est.std[std_sol$op == "~1"]
@@ -97,7 +116,7 @@ result <- data.frame(
 )
 write.csv(result, output_file, row.names = FALSE)
 
-# 输出模型统计量
+# 输出统计量
 stats_file <- sub(".csv", "_stats.csv", output_file)
 stats_df <- data.frame(
   r2 = r2,
@@ -108,3 +127,6 @@ stats_df <- data.frame(
   std_error = std_error
 )
 write.csv(stats_df, stats_file, row.names = FALSE)
+
+# 打印成功信息
+cat("R 成对删除回归完成。结果已写入:", output_file, "和", stats_file, "\n")
