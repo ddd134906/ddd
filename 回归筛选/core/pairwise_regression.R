@@ -21,101 +21,67 @@ for (col in c(dep_var, ind_vars)) {
     }
 }
 
-n_total <- nrow(data)
+# 有效样本（因变量非缺失）
+valid_y <- !is.na(data[[dep_var]])
+n_eff <- sum(valid_y)
 k <- length(ind_vars)
-p <- k + 1
 
-# 1. 成对协方差矩阵和均值（基于全部数据，使用所有可用的成对观测）
-cov_mat <- cov(data, use = "pairwise.complete.obs")
-mean_vec <- colMeans(data, na.rm = TRUE)
+cat("因变量有效样本数 (n_eff):", n_eff, "\n")
 
-# 2. 提取子矩阵
-Sxx <- cov_mat[ind_vars, ind_vars]
-Sxy <- cov_mat[ind_vars, dep_var]
-var_y <- cov_mat[dep_var, dep_var]
-x_means <- mean_vec[ind_vars]
-y_mean <- mean_vec[dep_var]
+# 子样本数据
+sub_data <- data[valid_y, ]
+y <- sub_data[[dep_var]]
+X_sub <- as.matrix(sub_data[, ind_vars])   # 确保矩阵
 
-# 3. 求解系数（成对删除）
+# 1. 协方差矩阵（使用子样本）
+Sxx <- cov(X_sub)           # 自变量协方差矩阵
+Sxy <- cov(X_sub, y)        # 自变量与因变量协方差向量
+var_y <- var(y)             # 因变量方差
+x_means <- colMeans(X_sub)  # 自变量均值
+y_mean <- mean(y)           # 因变量均值
+
+# 2. 回归系数
 beta <- solve(Sxx, Sxy)
 intercept <- y_mean - sum(x_means * beta)
 coefs <- c(intercept, beta)
 names(coefs) <- c("const", ind_vars)
 
-# 4. 计算每个系数的有效样本量 n_i
-n_eff <- sum(!is.na(data[[dep_var]]))  # 截距的有效样本
-n_eff_x <- sapply(ind_vars, function(v) sum(!is.na(data[[dep_var]]) & !is.na(data[[v]])))
+# 3. 预测值与残差（用于MSE）
+pred <- cbind(1, X_sub) %*% coefs
+res <- y - pred
+MSE <- sum(res^2) / (n_eff - k - 1)   # 自由度 n_eff - k - 1
 
-# 5. 计算每个系数的残差方差 MSE_i
-# 构建预测值（基于所有样本，但残差只对有效子集计算）
-X_all <- cbind(1, as.matrix(data[, ind_vars]))
-y_all <- data[[dep_var]]
-
-# 全局预测（用于计算子集残差）
-pred_all <- X_all %*% coefs
-
-# 截距的 MSE
-valid_const <- !is.na(y_all)
-n_const <- sum(valid_const)
-res_const <- y_all[valid_const] - pred_all[valid_const]
-MSE_const <- sum(res_const^2) / (n_const - p)
-
-# 每个自变量的 MSE
-MSE_x <- sapply(ind_vars, function(v) {
-    valid <- !is.na(y_all) & !is.na(X_all[, v])
-    n_i <- sum(valid)
-    if (n_i <= p) return(NA)
-    res_i <- y_all[valid] - pred_all[valid]
-    sum(res_i^2) / (n_i - p)
-})
-names(MSE_x) <- ind_vars
-
-# 6. 计算标准误
+# 4. 标准误（关键修正）
 Sxx_inv <- solve(Sxx)
-diag_Sxx_inv <- diag(Sxx_inv)
-
+# 自变量系数标准误：sqrt(MSE * diag(Sxx_inv) / (n_eff - 1))
+se_beta <- sqrt(MSE * diag(Sxx_inv) / (n_eff - 1))
 # 截距标准误
-se_intercept <- sqrt(MSE_const * (1/n_const + x_means %*% Sxx_inv %*% x_means / (n_const - 1)))
-se_beta <- sqrt(MSE_x * diag_Sxx_inv / (n_eff_x - 1))
+se_intercept <- sqrt(MSE * (1/n_eff + x_means %*% Sxx_inv %*% x_means / (n_eff - 1)))
 se <- c(se_intercept, se_beta)
 names(se) <- c("const", ind_vars)
 
-# 打印调试信息
-cat("\n--- 调试信息 ---\n")
-cat("n_eff (截距):", n_const, "\n")
-cat("n_eff_x:\n")
-print(n_eff_x)
-cat("MSE_const:", MSE_const, "\n")
-cat("MSE_x:\n")
-print(MSE_x)
-cat("diag(Sxx_inv):\n")
-print(diag_Sxx_inv)
-cat("se_intercept:", se_intercept, "\n")
-cat("se_beta:\n")
-print(se_beta)
-
-# 7. 检验统计量
-df <- n_const - p
+# 5. t检验、p值、置信区间
+df <- n_eff - k - 1
 tvals <- coefs / se
 pvals <- 2 * pt(-abs(tvals), df = df)
 ci_lower <- coefs - qt(0.975, df) * se
 ci_upper <- coefs + qt(0.975, df) * se
 
-# 8. 标准化系数
+# 6. 标准化系数 Beta
 y_sd <- sqrt(var_y)
 x_sd <- sqrt(diag(Sxx))
 beta_std <- beta * (x_sd / y_sd)
 beta_std_full <- c(NA, beta_std)
 names(beta_std_full) <- c("const", ind_vars)
 
-# 9. 模型统计量（R² 等）
+# 7. 模型统计量
 R2 <- as.numeric(t(beta) %*% Sxx %*% beta / var_y)
-adj_R2 <- 1 - (1 - R2) * (n_const - 1) / (n_const - p)
-f_stat <- (R2 / k) / ((1 - R2) / (n_const - p))
-f_pvalue <- pf(f_stat, k, n_const - p, lower.tail = FALSE)
-std_error <- sqrt(MSE_const)  # 使用截距的 MSE 作为整体估计
+adj_R2 <- 1 - (1 - R2) * (n_eff - 1) / (n_eff - k - 1)
+f_stat <- (R2 / k) / ((1 - R2) / (n_eff - k - 1))
+f_pvalue <- pf(f_stat, k, n_eff - k - 1, lower.tail = FALSE)
+std_error <- sqrt(MSE)
 
-# 10. 输出结果
+# 8. 输出结果
 result <- data.frame(
     variable = names(coefs),
     coef = coefs,
@@ -135,7 +101,7 @@ stats_df <- data.frame(
     adj_r2 = adj_R2,
     f_value = f_stat,
     f_pvalue = f_pvalue,
-    nobs = n_const,
+    nobs = n_eff,
     std_error = std_error
 )
 write.csv(stats_df, file = stats_file, row.names = FALSE)
@@ -146,7 +112,7 @@ cat("R²:", R2, "\n")
 cat("Adj R²:", adj_R2, "\n")
 cat("F statistic:", f_stat, ", p-value:", f_pvalue, "\n")
 cat("Std. Error of estimate:", std_error, "\n")
-cat("有效样本量 (n_eff):", n_const, "\n")
+cat("有效样本量 (n_eff):", n_eff, "\n")
 cat("\n系数与标准误:\n")
 print(data.frame(variable = names(coefs), coef = coefs, se = se))
 
