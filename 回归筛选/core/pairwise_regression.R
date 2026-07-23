@@ -8,7 +8,8 @@ dep_var <- args[2]
 ind_vars <- strsplit(args[3], ",")[[1]]
 output_file <- args[4]
 
-cat("\n========== 成对删除 OLS（完全匹配 SPSS）==========\n")
+options(digits = 15)
+cat("\n========== 成对删除 OLS（调试版）==========\n")
 cat("数据文件:", data_file, "\n")
 cat("因变量:", dep_var, "\n")
 cat("自变量:", paste(ind_vars, collapse=", "), "\n")
@@ -18,7 +19,6 @@ for (col in c(dep_var, ind_vars)) {
     if (!is.numeric(data[[col]])) data[[col]] <- as.numeric(as.character(data[[col]]))
 }
 
-# 有效样本（因变量非缺失）
 valid_y <- !is.na(data[[dep_var]])
 n_eff <- sum(valid_y)
 n_total <- nrow(data)
@@ -27,61 +27,73 @@ k <- length(ind_vars)
 cat("总样本量 (n_total):", n_total, "\n")
 cat("因变量有效样本 (n_eff):", n_eff, "\n")
 
-# ---- 子样本（用于 Sxy, Syy, 均值 y, 残差） ----
 sub_data <- data[valid_y, ]
 y_sub <- sub_data[[dep_var]]
 X_sub <- as.matrix(sub_data[, ind_vars])
-
-# ---- 总样本（用于 Sxx, 均值 x） ----
 X_total <- as.matrix(data[, ind_vars])
+
 x_means_total <- colMeans(X_total)
 y_mean_sub <- mean(y_sub)
 
-# 协方差矩阵
-Sxx <- cov(X_total)                 # 全部样本（自变量无缺失）
-Sxy <- cov(X_sub, y_sub)            # 子样本
+Sxx <- cov(X_total)
+Sxy <- cov(X_sub, y_sub)
 Syy <- var(y_sub)
 
-# 系数
 beta <- solve(Sxx, Sxy)
 intercept <- y_mean_sub - sum(x_means_total * beta)
 coefs <- c(intercept, beta)
 names(coefs) <- c("const", ind_vars)
 
-# 残差与 MSE（基于子样本）
 pred_sub <- cbind(1, X_sub) %*% coefs
 res_sub <- y_sub - pred_sub
 MSE <- sum(res_sub^2) / (n_eff - k - 1)
 
-# 标准误（使用 Sxx 和 n_eff-1）
 Sxx_inv <- solve(Sxx)
-se_beta <- sqrt(MSE * diag(Sxx_inv) / (n_eff - 1))
-se_intercept <- sqrt(MSE * (1/n_eff + x_means_total %*% Sxx_inv %*% x_means_total / (n_eff - 1)))
-se <- c(se_intercept, se_beta)
+
+# === 计算两种标准误 ===
+# 方法1：分母 n_eff - 1 (当前)
+se_beta1 <- sqrt(MSE * diag(Sxx_inv) / (n_eff - 1))
+se_intercept1 <- sqrt(MSE * (1/n_eff + x_means_total %*% Sxx_inv %*% x_means_total / (n_eff - 1)))
+se1 <- c(se_intercept1, se_beta1)
+
+# 方法2：分母 n_eff
+se_beta2 <- sqrt(MSE * diag(Sxx_inv) / n_eff)
+se_intercept2 <- sqrt(MSE * (1/n_eff + x_means_total %*% Sxx_inv %*% x_means_total / n_eff))
+se2 <- c(se_intercept2, se_beta2)
+
+cat("\n--- 方法1 (n_eff-1) 标准误 ---\n")
+print(se1)
+cat("\n--- 方法2 (n_eff) 标准误 ---\n")
+print(se2)
+
+# 输出中间矩阵（用于SPSS对比）
+write.csv(Sxx, "debug_Sxx.csv", row.names = FALSE)
+write.csv(Sxy, "debug_Sxy.csv", row.names = FALSE)
+write.csv(Sxx_inv, "debug_Sxx_inv.csv", row.names = FALSE)
+write.csv(data.frame(MSE = MSE, n_eff = n_eff), "debug_MSE.csv", row.names = FALSE)
+
+# 继续使用方法1作为最终输出（您可改为方法2）
+se <- se1
 names(se) <- c("const", ind_vars)
 
-# t检验等
 df <- n_eff - k - 1
 tvals <- coefs / se
 pvals <- 2 * pt(-abs(tvals), df = df)
 ci_lower <- coefs - qt(0.975, df) * se
 ci_upper <- coefs + qt(0.975, df) * se
 
-# 标准化系数 Beta
 y_sd <- sqrt(Syy)
 x_sd <- sqrt(diag(Sxx))
 beta_std <- beta * (x_sd / y_sd)
 beta_std_full <- c(NA, beta_std)
 names(beta_std_full) <- c("const", ind_vars)
 
-# 模型统计量
 R2 <- as.numeric(t(beta) %*% Sxx %*% beta / Syy)
 adj_R2 <- 1 - (1 - R2) * (n_eff - 1) / (n_eff - k - 1)
 f_stat <- (R2 / k) / ((1 - R2) / (n_eff - k - 1))
 f_pvalue <- pf(f_stat, k, n_eff - k - 1, lower.tail = FALSE)
 std_error <- sqrt(MSE)
 
-# 输出结果
 result <- data.frame(
     variable = names(coefs),
     coef = coefs,
@@ -111,7 +123,7 @@ cat("Intercept:", coefs["const"], "\n")
 cat("R²:", R2, "\n")
 cat("Adj R²:", adj_R2, "\n")
 cat("Std. Error of estimate:", std_error, "\n")
-cat("\n系数与标准误:\n")
+cat("\n系数与标准误 (方法1):\n")
 print(data.frame(variable = names(coefs), coef = coefs, se = se))
-
+cat("\n调试文件已生成：debug_Sxx.csv, debug_Sxy.csv, debug_Sxx_inv.csv, debug_MSE.csv\n")
 cat("\n========== 完成 ==========\n")
