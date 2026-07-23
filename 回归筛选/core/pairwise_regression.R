@@ -18,13 +18,16 @@ cat("数据维度:", dim(data), "\n")
 cat("因变量:", dep_var, "\n")
 cat("自变量:", paste(ind_vars, collapse=", "), "\n")
 
+# 成对协方差矩阵和均值向量
 cov_matrix <- cov(data, use = "pairwise.complete.obs")
 mean_vec <- colMeans(data, na.rm = TRUE)
 cat("协方差矩阵维度:", dim(cov_matrix), "\n")
 
+# 构建公式
 formula <- paste(dep_var, "~", paste(ind_vars, collapse = " + "))
 cat("模型公式:", formula, "\n")
 
+# 拟合模型
 fit <- sem(formula,
            sample.cov = cov_matrix,
            sample.mean = mean_vec,
@@ -37,6 +40,7 @@ if (is.null(fit)) {
     stop("lavaan 拟合失败")
 }
 
+# 提取系数和标准误
 est <- parameterEstimates(fit, remove.system.eq = TRUE)
 
 # 系数（含截距）
@@ -51,6 +55,7 @@ if (length(intercept) == 0) {
 }
 coefs <- c(intercept, coefs)
 
+# 标准误
 se <- est$se[est$op == "~"]
 names(se) <- est$rhs[est$op == "~"]
 se_intercept <- est$se[est$op == "~1"]
@@ -62,6 +67,7 @@ if (length(se_intercept) == 0) {
 }
 se <- c(se_intercept, se)
 
+# p值
 pvals <- est$pvalue[est$op == "~"]
 names(pvals) <- est$rhs[est$op == "~"]
 p_intercept <- est$pvalue[est$op == "~1"]
@@ -73,6 +79,7 @@ if (length(p_intercept) == 0) {
 }
 pvals <- c(p_intercept, pvals)
 
+# 95% CI
 ci_lower <- est$ci.lower[est$op == "~"]
 names(ci_lower) <- est$rhs[est$op == "~"]
 ci_lower_intercept <- est$ci.lower[est$op == "~1"]
@@ -110,30 +117,34 @@ if (length(beta_intercept) == 0) {
 }
 beta_std <- c(beta_intercept, beta_std)
 
-# --- 使用 lavPredict 获取预测值（成对删除下的拟合值）---
-pred <- as.vector(lavPredict(fit))
-obs <- data[, dep_var]
-mask <- !is.na(obs)
-obs <- obs[mask]
-pred <- pred[mask]
-
-ss_tot <- sum((obs - mean(obs))^2)
-ss_res <- sum((obs - pred)^2)
-r2 <- 1 - ss_res / ss_tot
+# --- 用协方差矩阵计算 R² ---
+# 提取自变量协方差子矩阵
+Sxx <- cov_matrix[ind_vars, ind_vars]
+# 提取因变量方差
+var_y <- cov_matrix[dep_var, dep_var]
+# 提取无截距系数
+beta_no_const <- coefs[names(coefs) != "const"]
+# 计算预测方差
+pred_var <- t(beta_no_const) %*% Sxx %*% beta_no_const
+r2 <- as.numeric(pred_var / var_y)
+# 防止数值溢出
+if (r2 < 0) r2 <- 0
+if (r2 > 1) r2 <- 1
 
 n <- nrow(data)
 k <- length(ind_vars)
 adj_r2 <- 1 - (1 - r2) * (n - 1) / (n - k - 1)
 
+# F 统计量
 f_stat <- (r2 / k) / ((1 - r2) / (n - k - 1))
 f_pvalue <- pf(f_stat, k, n - k - 1, lower.tail = FALSE)
 
-residuals <- obs - pred
-ssr <- sum(residuals^2)
-mse <- ssr / (n - k - 1)
-std_error <- sqrt(mse)
+# 回归标准误（从模型隐含的残差方差计算）
+# 残差方差 = var_y * (1 - r2)
+resid_var <- var_y * (1 - r2)
+std_error <- sqrt(resid_var)
 
-# 输出
+# 输出系数表
 result <- data.frame(
   variable = names(coefs),
   coef = coefs,
@@ -147,6 +158,7 @@ result <- data.frame(
 )
 write.csv(result, output_file, row.names = FALSE)
 
+# 输出统计量
 stats_file <- sub(".csv", "_stats.csv", output_file)
 stats_df <- data.frame(
   r2 = r2,
