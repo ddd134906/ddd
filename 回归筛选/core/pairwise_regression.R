@@ -8,7 +8,7 @@ dep_var <- args[2]
 ind_vars <- strsplit(args[3], ",")[[1]]
 output_file <- args[4]
 
-cat("\n========== 成对删除 OLS（SPSS 精确版 - 强制使用 n_eff-1）==========\n")
+cat("\n========== 成对删除 OLS（SPSS 精确版：总样本协方差）==========\n")
 cat("数据文件:", data_file, "\n")
 cat("因变量:", dep_var, "\n")
 cat("自变量:", paste(ind_vars, collapse=", "), "\n")
@@ -32,39 +32,34 @@ sub_data <- data[valid_y, ]
 y <- sub_data[[dep_var]]
 X_sub <- as.matrix(sub_data[, ind_vars])
 
-# 协方差矩阵（基于子样本）
-Sxx <- cov(X_sub)
+# 子样本协方差（用于系数和R²）
+Sxx_sub <- cov(X_sub)
 Sxy <- cov(X_sub, y)
 var_y <- var(y)
-x_means <- colMeans(X_sub)
+x_means_sub <- colMeans(X_sub)
 y_mean <- mean(y)
 
 # 回归系数
-beta <- solve(Sxx, Sxy)
-intercept <- y_mean - sum(x_means * beta)
+beta <- solve(Sxx_sub, Sxy)
+intercept <- y_mean - sum(x_means_sub * beta)
 coefs <- c(intercept, beta)
 names(coefs) <- c("const", ind_vars)
 
-# 残差与 MSE（自由度 n_eff - k - 1）
+# 残差与 MSE（子样本）
 pred <- cbind(1, X_sub) %*% coefs
 res <- y - pred
 MSE <- sum(res^2) / (n_eff - k - 1)
 
-# 关键修正：标准误强制使用 n_eff - 1
-Sxx_inv <- solve(Sxx)
-se_beta <- sqrt(MSE * diag(Sxx_inv) / (n_eff - 1))
-se_intercept <- sqrt(MSE * (1/n_eff + x_means %*% Sxx_inv %*% x_means / (n_eff - 1)))
+# --- 标准误：使用总样本协方差 ---
+X_total <- as.matrix(data[, ind_vars])   # 总样本（自变量无缺失）
+Sxx_total <- cov(X_total)
+Sxx_total_inv <- solve(Sxx_total)
+
+se_beta <- sqrt(MSE * diag(Sxx_total_inv) / (n_eff - 1))
+x_means_total <- colMeans(X_total)
+se_intercept <- sqrt(MSE * (1/n_eff + x_means_total %*% Sxx_total_inv %*% x_means_total / (n_eff - 1)))
 se <- c(se_intercept, se_beta)
 names(se) <- c("const", ind_vars)
-
-# 调试输出（用于核对）
-cat("\n--- 诊断信息 ---\n")
-cat("MSE =", MSE, "\n")
-cat("diag(Sxx_inv):\n")
-print(diag(Sxx_inv))
-cat("se_intercept =", se_intercept, "\n")
-cat("se_beta (前3个):\n")
-print(head(se_beta, 3))
 
 # t检验等
 df <- n_eff - k - 1
@@ -73,15 +68,15 @@ pvals <- 2 * pt(-abs(tvals), df = df)
 ci_lower <- coefs - qt(0.975, df) * se
 ci_upper <- coefs + qt(0.975, df) * se
 
-# 标准化系数
+# 标准化系数（基于子样本方差）
 y_sd <- sqrt(var_y)
-x_sd <- sqrt(diag(Sxx))
+x_sd <- sqrt(diag(Sxx_sub))
 beta_std <- beta * (x_sd / y_sd)
 beta_std_full <- c(NA, beta_std)
 names(beta_std_full) <- c("const", ind_vars)
 
-# 模型统计量
-R2 <- as.numeric(t(beta) %*% Sxx %*% beta / var_y)
+# 模型统计量（R²使用子样本协方差）
+R2 <- as.numeric(t(beta) %*% Sxx_sub %*% beta / var_y)
 adj_R2 <- 1 - (1 - R2) * (n_eff - 1) / (n_eff - k - 1)
 f_stat <- (R2 / k) / ((1 - R2) / (n_eff - k - 1))
 f_pvalue <- pf(f_stat, k, n_eff - k - 1, lower.tail = FALSE)
