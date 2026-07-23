@@ -25,19 +25,18 @@ cat("协方差矩阵维度:", dim(cov_matrix), "\n")
 formula <- paste(dep_var, "~", paste(ind_vars, collapse = " + "))
 cat("模型公式:", formula, "\n")
 
-fit <- sem(formula, 
-           sample.cov = cov_matrix, 
+fit <- sem(formula,
+           sample.cov = cov_matrix,
            sample.mean = mean_vec,
            sample.nobs = nrow(data),
            meanstructure = TRUE,
-           estimator = "ML", 
+           estimator = "ML",
            test = "standard")
 
 if (is.null(fit)) {
     stop("lavaan 拟合失败")
 }
 
-# --- 提取系数和统计量 ---
 est <- parameterEstimates(fit, remove.system.eq = TRUE)
 
 # 系数（含截距）
@@ -52,7 +51,6 @@ if (length(intercept) == 0) {
 }
 coefs <- c(intercept, coefs)
 
-# 标准误
 se <- est$se[est$op == "~"]
 names(se) <- est$rhs[est$op == "~"]
 se_intercept <- est$se[est$op == "~1"]
@@ -64,7 +62,6 @@ if (length(se_intercept) == 0) {
 }
 se <- c(se_intercept, se)
 
-# p值
 pvals <- est$pvalue[est$op == "~"]
 names(pvals) <- est$rhs[est$op == "~"]
 p_intercept <- est$pvalue[est$op == "~1"]
@@ -76,7 +73,6 @@ if (length(p_intercept) == 0) {
 }
 pvals <- c(p_intercept, pvals)
 
-# 95% CI
 ci_lower <- est$ci.lower[est$op == "~"]
 names(ci_lower) <- est$rhs[est$op == "~"]
 ci_lower_intercept <- est$ci.lower[est$op == "~1"]
@@ -114,13 +110,13 @@ if (length(beta_intercept) == 0) {
 }
 beta_std <- c(beta_intercept, beta_std)
 
-# --- R² 和调整 R² ---
-# 使用 lavPredict 获取因变量预测值
-pred <- lavPredict(fit)[, dep_var]   # 预测值（所有观测）
+# --- 使用 lavPredict 获取预测值（成对删除下的拟合值）---
+pred <- as.vector(lavPredict(fit))
 obs <- data[, dep_var]
 mask <- !is.na(obs)
 obs <- obs[mask]
 pred <- pred[mask]
+
 ss_tot <- sum((obs - mean(obs))^2)
 ss_res <- sum((obs - pred)^2)
 r2 <- 1 - ss_res / ss_tot
@@ -129,17 +125,15 @@ n <- nrow(data)
 k <- length(ind_vars)
 adj_r2 <- 1 - (1 - r2) * (n - 1) / (n - k - 1)
 
-# --- F 统计量 ---
 f_stat <- (r2 / k) / ((1 - r2) / (n - k - 1))
 f_pvalue <- pf(f_stat, k, n - k - 1, lower.tail = FALSE)
 
-# --- 回归标准误 ---
 residuals <- obs - pred
 ssr <- sum(residuals^2)
 mse <- ssr / (n - k - 1)
 std_error <- sqrt(mse)
 
-# 输出系数表
+# 输出
 result <- data.frame(
   variable = names(coefs),
   coef = coefs,
@@ -153,7 +147,6 @@ result <- data.frame(
 )
 write.csv(result, output_file, row.names = FALSE)
 
-# 输出统计量
 stats_file <- sub(".csv", "_stats.csv", output_file)
 stats_df <- data.frame(
   r2 = r2,
