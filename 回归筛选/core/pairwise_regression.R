@@ -8,7 +8,7 @@ dep_var <- args[2]
 ind_vars <- strsplit(args[3], ",")[[1]]
 output_file <- args[4]
 
-cat("\n========== 手动成对删除 OLS 回归（协方差矩阵法）==========\n")
+cat("\n========== 成对删除回归（标准误使用统一的有效样本量，与SPSS一致）==========\n")
 cat("数据文件:", data_file, "\n")
 cat("因变量:", dep_var, "\n")
 cat("自变量:", paste(ind_vars, collapse=", "), "\n")
@@ -47,20 +47,20 @@ r2 <- as.numeric(pred_var / var_y)
 if (r2 < 0) r2 <- 0
 if (r2 > 1) r2 <- 1
 
-# 6. 残差方差
+# 6. 残差方差（MSE）
 MSE <- var_y * (1 - r2)
 
-# 7. 标准误（使用总样本量 n_total - 1）
-# X'X = (n_total - 1) * Sxx
-var_beta <- MSE * solve(Sxx) / (n_total - 1)
+# 7. 标准误（使用 n_eff 作为有效样本量）
+# X'X = (n_eff - 1) * Sxx，因协方差矩阵使用 (n_pair - 1) 缩放，统一采用 n_eff
+var_beta <- MSE * solve(Sxx) / (n_eff - 1)
 se_beta <- sqrt(diag(var_beta))
-var_intercept <- MSE * (1/n_eff + x_means %*% solve(Sxx) %*% x_means / (n_total - 1))
+var_intercept <- MSE * (1/n_eff + x_means %*% solve(Sxx) %*% x_means / (n_eff - 1))
 se_intercept <- sqrt(var_intercept)
 
 coefs <- c(intercept, beta)
 se <- c(se_intercept, se_beta)
 
-# 8. t 检验
+# 8. t 检验（自由度 df）
 tvals <- coefs / se
 pvals <- 2 * pt(-abs(tvals), df = df)
 
@@ -88,7 +88,7 @@ cat("R²:", r2, "\n")
 cat("Adj R²:", adj_r2, "\n")
 cat("F statistic:", f_stat, ", p-value:", f_pvalue, "\n")
 cat("Std. Error of estimate:", std_error, "\n")
-cat("Effective sample size (n_eff):", n_eff, "\n")
+cat("Effective sample size (n_eff, used for SE):", n_eff, "\n")
 cat("Total sample size (n_total):", n_total, "\n")
 
 coef_names <- c("const", ind_vars)
