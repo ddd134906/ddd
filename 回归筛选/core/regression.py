@@ -5,7 +5,7 @@ from scipy import stats
 import subprocess
 import tempfile
 import os
-import sys
+import shutil
 
 def parse_factor_indicator(ind_list, n_factors):
     parsed = []
@@ -24,37 +24,65 @@ def parse_factor_indicator(ind_list, n_factors):
     return parsed
 
 
+def _find_rscript():
+    """查找系统 Rscript 可执行文件路径"""
+    rscript_env = os.environ.get('RSCRIPT_PATH')
+    if rscript_env and os.path.exists(rscript_env):
+        return rscript_env
+    rscript_path = shutil.which('Rscript')
+    if rscript_path:
+        return rscript_path
+    common_paths = [
+        "/usr/bin/Rscript",
+        "/usr/local/bin/Rscript",
+        "/opt/R/current/bin/Rscript",
+        "C:\\Program Files\\R\\R-4.5.2\\bin\\Rscript.exe",
+        "C:\\Program Files\\R\\R-4.5.1\\bin\\Rscript.exe",
+        "C:\\Program Files\\R\\R-4.5.0\\bin\\Rscript.exe",
+        "C:\\Program Files\\R\\R-4.4.3\\bin\\Rscript.exe",
+        "C:\\Users\\ID0511084\\AppData\\Local\\Programs\\R\\R-4.5.2\\bin\\Rscript.exe",
+    ]
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+    raise RuntimeError("未找到 Rscript，请安装 R 并将 Rscript 所在目录添加到 PATH，或设置环境变量 RSCRIPT_PATH")
+
+
 def _pairwise_regression_with_r(df, dep_var, ind_vars):
     """
     使用 R (lavaan) 通过 subprocess 进行成对删除回归，包含标准化系数。
-    增加详细调试输出，确保 R 脚本被正确执行。
+    自动查找 Rscript 路径，并适配新的 R 脚本输出格式。
     """
-    import subprocess
-    import tempfile
-    import os
-    import sys
-
-    # 1. 准备数据
     data = df[[dep_var] + ind_vars].dropna(how='all')
     if data.empty:
         raise ValueError("数据全部缺失，无法回归")
 
     print(f"【R成对删除】因变量: {dep_var}, 自变量数: {len(ind_vars)}, 数据行数: {len(data)}")
 
-    # 2. 创建临时文件
+    # 查找 Rscript 路径
+    try:
+        rscript_path = _find_rscript()
+        print(f"【R成对删除】使用 Rscript: {rscript_path}")
+    except RuntimeError as e:
+        print(f"【R成对删除】查找 Rscript 失败: {e}")
+        raise
+
+    # 创建临时文件
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as f_data:
         data.to_csv(f_data, index=False)
         data_path = f_data.name
+
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as f_out:
         coef_path = f_out.name
+
     stats_path = coef_path.replace('.csv', '_stats.csv')
 
-    # 3. 调用 R 脚本
+    # 调用 R 脚本
     r_script = os.path.join(os.path.dirname(__file__), 'pairwise_regression.R')
     if not os.path.exists(r_script):
         raise FileNotFoundError(f"R 脚本不存在: {r_script}")
     ind_vars_str = ','.join(ind_vars)
-    cmd = ['Rscript', r_script, data_path, dep_var, ind_vars_str, coef_path]
+    cmd = [rscript_path, r_script, data_path, dep_var, ind_vars_str, coef_path]
     print(f"【R成对删除】执行命令: {' '.join(cmd)}")
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -67,17 +95,17 @@ def _pairwise_regression_with_r(df, dep_var, ind_vars):
     if result.returncode != 0:
         raise RuntimeError(f"R 脚本执行失败: {result.stderr}")
 
-    # 4. 检查输出文件
+    # 检查输出文件
     if not os.path.exists(coef_path):
         raise FileNotFoundError(f"系数文件未生成: {coef_path}")
     if not os.path.exists(stats_path):
         raise FileNotFoundError(f"统计量文件未生成: {stats_path}")
 
-    # 5. 读取结果
+    # 读取结果（R 脚本现在输出 variable 列）
     res_df = pd.read_csv(coef_path)
     stats_df = pd.read_csv(stats_path)
 
-    # 6. 构建返回字典
+    # 直接使用 variable 列作为索引
     coeff = pd.Series(res_df['coef'].values, index=res_df['variable'])
     bse = pd.Series(res_df['se'].values, index=res_df['variable'])
     tvals = pd.Series(res_df['t'].values, index=res_df['variable'])
@@ -104,7 +132,7 @@ def _pairwise_regression_with_r(df, dep_var, ind_vars):
         'var_names': list(coeff.index)
     }
 
-    # 7. 清理临时文件
+    # 清理临时文件
     os.unlink(data_path)
     os.unlink(coef_path)
     os.unlink(stats_path)
