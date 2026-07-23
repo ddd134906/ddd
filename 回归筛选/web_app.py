@@ -2,40 +2,24 @@ import streamlit as st
 import sys
 import os
 import tempfile
-import pandas as pd
 from core import run_analysis
 
-# 设置页面配置（必须先于其他st命令）
+# 设置页面配置
 st.set_page_config(
     page_title="ROE SCAN 自动化分析",
     page_icon="🌿",
     layout="wide"
 )
 
-# ---------- 自定义 CSS 样式（绿色主题） ----------
+# ---------- 自定义 CSS 样式（仿 app.py 绿色主题） ----------
 st.markdown("""
 <style>
-    /* 全局背景色 */
     .stApp {
         background-color: #E8F5E9;
     }
-    /* 主标题 */
     h1, h2, h3, h4, h5, h6 {
         color: #1B5E20;
     }
-    /* 侧边栏背景色 */
-    .css-1d391kg, .css-1d391kg .st-emotion-cache-1wmy9hl {
-        background-color: #2E7D32;
-    }
-    /* 侧边栏文字颜色 */
-    .css-1d391kg .st-emotion-cache-1wmy9hl, .css-1d391kg label, .css-1d391kg .st-emotion-cache-1wmy9hl p {
-        color: #FFFFFF;
-    }
-    /* 侧边栏标题 */
-    .css-1d391kg .st-emotion-cache-1wmy9hl h1, .css-1d391kg .st-emotion-cache-1wmy9hl h2, .css-1d391kg .st-emotion-cache-1wmy9hl h3 {
-        color: #E8F5E9;
-    }
-    /* 主按钮颜色 */
     .stButton > button {
         background-color: #388E3C;
         color: white;
@@ -49,26 +33,21 @@ st.markdown("""
         color: white;
         border: 1px solid #A5D6A7;
     }
-    /* 文件上传区域边框 */
     .stFileUploader > div {
         border: 2px dashed #4CAF50;
         border-radius: 10px;
         background-color: #C8E6C9;
+        padding: 10px;
     }
-    /* 日志区域背景 */
     .stTextArea > div {
         background-color: #FFFFFF;
         border-radius: 8px;
         border: 1px solid #A5D6A7;
     }
-    /* 成功/错误消息 */
-    .stAlert {
-        border-radius: 8px;
+    p, li, label, .stMarkdown {
+        color: #1B5E20;
     }
-    .stAlert .st-emotion-cache-1wmy9hl {
-        background-color: #C8E6C9;
-    }
-    /* 下载按钮 */
+    /* 下载按钮样式 */
     .stDownloadButton > button {
         background-color: #1B5E20;
         color: white;
@@ -76,47 +55,68 @@ st.markdown("""
     .stDownloadButton > button:hover {
         background-color: #0D3B0E;
     }
-    /* 进度条等 */
-    .stProgress > div {
-        background-color: #4CAF50;
-    }
-    /* 通用文字 */
-    p, li, label, .stMarkdown {
-        color: #1B5E20;
-    }
-    /* 侧边栏中文字颜色覆盖 */
-    .css-1d391kg p, .css-1d391kg label, .css-1d391kg .stMarkdown {
-        color: #FFFFFF;
-    }
-    /* 侧边栏中链接文字 */
-    .css-1d391kg a {
-        color: #A5D6A7;
+    /* 主容器内边距 */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- 页面标题 ----------
+# ---------- 标题 ----------
 st.title("ROE SCAN 自动化分析")
 st.markdown("上传 SPSS 数据文件和配置文件，点击运行即可获得完整分析结果。")
 
-# ---------- 侧边栏：文件上传 ----------
-with st.sidebar:
-    st.header("📁 文件上传")
-    spss_file = st.file_uploader("上传 SPSS 数据文件 (.sav)", type=["sav"])
-    config_file = st.file_uploader("上传配置文件 (.xlsx)", type=["xlsx"])
+# ---------- 初始化 session_state ----------
+if 'log_messages' not in st.session_state:
+    st.session_state.log_messages = []
+if 'analysis_done' not in st.session_state:
+    st.session_state.analysis_done = False
+if 'output_path' not in st.session_state:
+    st.session_state.output_path = None
 
-# ---------- 主区域：运行按钮和日志 ----------
-run_btn = st.button("运行", disabled=(spss_file is None or config_file is None))
+# ---------- 主区域布局（仿 app.py） ----------
+# 使用 columns 模拟 app.py 的网格布局
+col1, col2 = st.columns([1, 4])
 
-# 日志显示区域
-log_area = st.empty()
+with col1:
+    st.markdown("**文件选择**")
+
+with col2:
+    spss_file = st.file_uploader("SPSS 数据文件 (.sav)", type=["sav"], label_visibility="collapsed")
+    config_file = st.file_uploader("定义文件 (.xlsx)", type=["xlsx"], label_visibility="collapsed")
+
+# 运行按钮居中
+col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+with col_btn2:
+    run_btn = st.button("运行分析", use_container_width=True, disabled=(spss_file is None or config_file is None))
+
+# 日志显示区域（占大部分空间）
+st.markdown("---")
+log_placeholder = st.empty()
+
+def update_log_display():
+    """更新日志显示区域，显示全部日志"""
+    if st.session_state.log_messages:
+        full_log = "\n".join(st.session_state.log_messages)
+    else:
+        full_log = "等待运行..."
+    log_placeholder.text_area("📝 运行日志", full_log, height=400, disabled=True, label_visibility="collapsed")
+
+# 初始化显示
+update_log_display()
 
 # ---------- 运行逻辑 ----------
 if run_btn:
+    # 添加分隔线，区分不同运行
+    st.session_state.log_messages.append("="*50)
+    st.session_state.log_messages.append("开始新的分析任务...")
+    update_log_display()
+
     if spss_file is None or config_file is None:
         st.error("请先上传两个文件！")
     else:
-        # 将上传的文件保存到临时文件
+        # 保存上传文件到临时文件
         with tempfile.NamedTemporaryFile(delete=False, suffix=".sav") as tmp_spss:
             tmp_spss.write(spss_file.getvalue())
             spss_path = tmp_spss.name
@@ -125,33 +125,39 @@ if run_btn:
             tmp_config.write(config_file.getvalue())
             config_path = tmp_config.name
 
-        # 输出结果文件路径
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx").name
+        st.session_state.output_path = output_path
 
-        # 自定义日志捕获函数，实时更新显示
-        log_messages = []
+        # 日志回调
         def log_callback(msg):
-            log_messages.append(msg)
-            # 更新显示最新的日志（只显示最后20条，避免过长）
-            log_area.text_area("📝 运行日志", "\n".join(log_messages[-20:]), height=300)
+            st.session_state.log_messages.append(msg)
+            update_log_display()
 
         # 执行分析
         try:
             run_analysis(spss_path, config_path, output_path, log_callback=log_callback)
-            st.success("✅ 分析完成！点击下方按钮下载结果。")
-            # 提供下载链接
-            with open(output_path, "rb") as f:
-                st.download_button(
-                    label="📥 下载结果 Excel",
-                    data=f,
-                    file_name="ROE_Results.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            st.session_state.analysis_done = True
+            st.success("✅ 分析完成！")
         except Exception as e:
             st.error(f"❌ 分析失败: {e}")
             log_callback(str(e))
         finally:
             # 清理临时文件（可选）
-            os.unlink(spss_path)
-            os.unlink(config_path)
-            os.unlink(output_path)
+            # os.unlink(spss_path)
+            # os.unlink(config_path)
+            pass
+
+# 如果分析已完成且结果文件存在，显示下载按钮
+if st.session_state.analysis_done and st.session_state.output_path:
+    if os.path.exists(st.session_state.output_path):
+        with open(st.session_state.output_path, "rb") as f:
+            st.download_button(
+                label="📥 下载结果 Excel",
+                data=f,
+                file_name="ROE_Results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+    else:
+        st.warning("结果文件已丢失，请重新运行分析。")
+        st.session_state.analysis_done = False
