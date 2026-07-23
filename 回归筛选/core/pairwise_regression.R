@@ -1,19 +1,19 @@
 #!/usr/bin/env Rscript
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 4) {
-    stop("用法: Rscript pairwise_regression.R <数据文件.csv> <因变量> <自变量列表(逗号分隔)> <输出文件.csv>")
+    stop("Usage: Rscript pairwise_regression.R <data.csv> <dep_var> <ind_vars(comma)> <output.csv>")
 }
 data_file <- args[1]
 dep_var <- args[2]
 ind_vars <- strsplit(args[3], ",")[[1]]
 output_file <- args[4]
 
-cat("\n========== 成对删除回归（逐系数标准误，精确匹配 SPSS）==========\n")
+cat("\n========== 成对删除 OLS 回归（直接计算 X'X，精确匹配 SPSS）==========\n")
 cat("数据文件:", data_file, "\n")
 cat("因变量:", dep_var, "\n")
 cat("自变量:", paste(ind_vars, collapse=", "), "\n")
 
-# ---------- 读取数据 ----------
+# 读取数据
 data <- read.csv(data_file, stringsAsFactors = FALSE)
 for (col in c(dep_var, ind_vars)) {
     if (!is.numeric(data[[col]])) {
@@ -21,126 +21,145 @@ for (col in c(dep_var, ind_vars)) {
     }
 }
 
-# ---------- 1. 成对协方差矩阵和均值 ----------
-cov_matrix <- cov(data, use = "pairwise.complete.obs")
-mean_vec <- colMeans(data, na.rm = TRUE)
-
-# ---------- 2. 提取子矩阵 ----------
-Sxx <- cov_matrix[ind_vars, ind_vars]
-Sxy <- cov_matrix[ind_vars, dep_var]
-var_y <- cov_matrix[dep_var, dep_var]
-x_means <- mean_vec[ind_vars]
-y_mean <- mean_vec[dep_var]
-
-# ---------- 3. 回归系数 ----------
-beta <- solve(Sxx, Sxy)
-intercept <- y_mean - sum(x_means * beta)
-coefs <- c(intercept, beta)
-names(coefs) <- c("const", ind_vars)
-
-# ---------- 4. 有效样本量（因变量非缺失） ----------
-n_eff <- sum(!is.na(data[, dep_var]))
 n_total <- nrow(data)
 k <- length(ind_vars)
-p <- k + 1  # 参数个数（含截距）
+p <- k + 1  # 包含截距
 
-cat("\n--- 基本统计量 ---\n")
-cat("总样本数 (n_total):", n_total, "\n")
-cat("因变量有效样本数 (n_eff):", n_eff, "\n")
-cat("自变量个数 (k):", k, "\n")
-cat("模型参数个数 (p):", p, "\n")
+# 1. 构建设计矩阵 X（包含截距）
+X <- cbind(1, as.matrix(data[, ind_vars]))
+y <- data[[dep_var]]
 
-# ---------- 5. 全局 R² ----------
-pred_var <- t(beta) %*% Sxx %*% beta
-r2 <- as.numeric(pred_var / var_y)
-if (r2 < 0) r2 <- 0
-if (r2 > 1) r2 <- 1
-cat("R² =", r2, "\n")
+# 2. 计算成对删除的 X'X 和 X'y
+# 使用循环，但对小数据直接向量化
+XpX <- matrix(0, p, p)
+Xpy <- numeric(p)
 
-# ---------- 6. 构造 X'X 矩阵（使用 n_total-1 缩放，与SPSS常见做法一致） ----------
-# X'X = (n_total - 1) * [1, x_mean'; x_mean, Sxx]
-XpX <- (n_total - 1) * rbind(
-    c(1, x_means),
-    cbind(x_means, Sxx)
-)
-rownames(XpX) <- colnames(XpX) <- c("const", ind_vars)
-invXpX <- solve(XpX)   # 全局 (X'X)^{-1}
-
-cat("\n--- X'X 矩阵 (缩放到 n_total-1) 的对角元素 ---\n")
-print(diag(XpX))
-
-cat("\n--- (X'X)^{-1} 的对角元素 ---\n")
-print(diag(invXpX))
-
-# ---------- 7. 逐系数计算 MSE 和标准误 ----------
-se <- numeric(p)
-names(se) <- c("const", ind_vars)
-
-# 7a. 截距的标准误：使用因变量非缺失样本（无自变量缺失限制）
-valid_y <- !is.na(data[[dep_var]])
-n_y <- sum(valid_y)
-y_sub <- data[[dep_var]][valid_y]
-X_sub <- cbind(1, as.matrix(data[valid_y, ind_vars]))
-pred_y <- X_sub %*% coefs
-res_y <- y_sub - pred_y
-MSE_y <- sum(res_y^2) / (n_y - p)   # 自由度 n_y - p
-se["const"] <- sqrt(MSE_y * invXpX["const", "const"])
-
-cat("\n--- 截距计算 ---\n")
-cat("有效样本数 (y非缺失):", n_y, "\n")
-cat("残差平方和:", sum(res_y^2), "\n")
-cat("MSE =", MSE_y, "\n")
-cat("invXpX[const,const] =", invXpX["const", "const"], "\n")
-cat("标准误 =", se["const"], "\n")
-
-# 7b. 每个自变量
-for (i in seq_along(ind_vars)) {
-    var <- ind_vars[i]
-    # 筛选因变量和该自变量均非缺失
-    valid <- !is.na(data[[dep_var]]) & !is.na(data[[var]])
-    n_i <- sum(valid)
-    if (n_i == 0) {
-        warning(paste("变量", var, "没有有效样本，标准误设为NA"))
-        se[var] <- NA
-        next
+# 为每个变量对计算有效样本和乘积和
+for (i in 1:p) {
+    for (j in i:p) {
+        # 找出两列均非缺失的行
+        if (i == 1 && j == 1) {
+            # 截距*截距：所有行（因变量无限制？实际上回归中截距只要求因变量非缺失？但这里X'X的(1,1)应该是n_eff，即因变量非缺失数，因为残差计算是基于y非缺失的子集）
+            # 对于成对删除，X'X的(1,1)等于因变量有效样本数（因为截距列全为1，且与自身配对，只需y非缺失）
+            valid <- !is.na(y)
+        } else if (i == 1) {
+            # 截距与变量j：需要y和xj均非缺失
+            valid <- !is.na(y) & !is.na(X[, j])
+        } else if (j == 1) {
+            valid <- !is.na(y) & !is.na(X[, i])
+        } else {
+            # 两自变量均非缺失
+            valid <- !is.na(X[, i]) & !is.na(X[, j])
+        }
+        n_ij <- sum(valid)
+        if (n_ij == 0) {
+            XpX[i,j] <- XpX[j,i] <- 0
+        } else {
+            XpX[i,j] <- XpX[j,i] <- sum(X[valid, i] * X[valid, j])
+        }
     }
-    # 使用同样的系数预测该子集
-    X_i <- cbind(1, as.matrix(data[valid, ind_vars]))
-    y_i <- data[[dep_var]][valid]
-    pred_i <- X_i %*% coefs
-    res_i <- y_i - pred_i
-    MSE_i <- sum(res_i^2) / (n_i - p)   # 自由度 n_i - p
-    se[var] <- sqrt(MSE_i * invXpX[var, var])
-    
-    cat("\n--- 自变量", var, " ---\n")
-    cat("有效样本数 (y和", var, "均非缺失):", n_i, "\n")
-    cat("残差平方和:", sum(res_i^2), "\n")
-    cat("MSE =", MSE_i, "\n")
-    cat("invXpX[", var, ",", var, "] =", invXpX[var, var], "\n")
-    cat("标准误 =", se[var], "\n")
 }
 
-# ---------- 8. t 检验（自由度使用 n_eff - p，与SPSS习惯一致） ----------
-df <- n_eff - p   # 因变量有效样本量减去参数个数
+# 计算 X'y
+for (i in 1:p) {
+    if (i == 1) {
+        valid <- !is.na(y)  # 截距与y配对：只需要y非缺失
+    } else {
+        valid <- !is.na(y) & !is.na(X[, i])
+    }
+    n_i <- sum(valid)
+    if (n_i == 0) {
+        Xpy[i] <- 0
+    } else {
+        Xpy[i] <- sum(X[valid, i] * y[valid])
+    }
+}
+
+cat("\n--- 成对样本量（用于 X'X 元素） ---\n")
+# 打印对角线有效样本数（即每列与自身配对的有效数）
+for (i in 1:p) {
+    if (i == 1) {
+        n_ii <- sum(!is.na(y))  # 截距对角线为因变量有效数
+    } else {
+        n_ii <- sum(!is.na(y) & !is.na(X[, i]))
+    }
+    cat("X'X[", i, ",", i, "] 有效样本数 =", n_ii, "\n")
+}
+
+# 3. 解系数
+coefs <- solve(XpX, Xpy)
+names(coefs) <- c("const", ind_vars)
+
+# 4. 因变量有效样本量（用于整体统计）
+n_eff <- sum(!is.na(y))
+
+# 5. R²（基于协方差矩阵，更稳定）
+cov_mat <- cov(data, use = "pairwise.complete.obs")
+Sxx <- cov_mat[ind_vars, ind_vars]
+Sxy <- cov_mat[ind_vars, dep_var]
+var_y <- cov_mat[dep_var, dep_var]
+beta <- coefs[-1]  # 去掉截距
+r2 <- as.numeric(t(beta) %*% Sxx %*% beta / var_y)
+if (r2 < 0) r2 <- 0
+if (r2 > 1) r2 <- 1
+
+# 6. 逐系数标准误
+se <- numeric(p)
+names(se) <- c("const", ind_vars)
+XpX_inv <- solve(XpX)
+
+# 6a. 截距标准误：使用y非缺失的子集计算MSE
+valid_y <- !is.na(y)
+n_y <- sum(valid_y)
+if (n_y > p) {
+    X_sub <- X[valid_y, ]
+    y_sub <- y[valid_y]
+    pred_y <- X_sub %*% coefs
+    res_y <- y_sub - pred_y
+    MSE_const <- sum(res_y^2) / (n_y - p)   # 使用同样的系数
+    se["const"] <- sqrt(MSE_const * XpX_inv[1,1])
+} else {
+    se["const"] <- NA
+}
+
+# 6b. 每个自变量标准误
+for (i in 1:k) {
+    var_name <- ind_vars[i]
+    valid <- !is.na(y) & !is.na(X[, i+1])  # 注意X列索引：1是截距，i+1是该自变量
+    n_i <- sum(valid)
+    if (n_i > p) {
+        X_i <- X[valid, ]
+        y_i <- y[valid]
+        pred_i <- X_i %*% coefs
+        res_i <- y_i - pred_i
+        MSE_i <- sum(res_i^2) / (n_i - p)
+        se[var_name] <- sqrt(MSE_i * XpX_inv[i+1, i+1])
+    } else {
+        se[var_name] <- NA
+    }
+}
+
+# 7. t检验、p值、置信区间（自由度使用n_eff - p，与SPSS一致）
+df <- n_eff - p
 tvals <- coefs / se
 pvals <- 2 * pt(-abs(tvals), df = df)
 ci_lower <- coefs - qt(0.975, df) * se
 ci_upper <- coefs + qt(0.975, df) * se
 
-# ---------- 9. 标准化系数 ----------
-y_sd <- sqrt(var_y)
-x_sd <- sqrt(diag(Sxx))
+# 8. 标准化系数
+y_sd <- sd(y, na.rm = TRUE)
+x_sd <- sapply(data[, ind_vars], sd, na.rm = TRUE)
 beta_std <- beta * (x_sd / y_sd)
 beta_std_full <- c(NA, beta_std)
 names(beta_std_full) <- c("const", ind_vars)
 
-# ---------- 10. 模型统计量（调整R²，F） ----------
+# 9. 模型统计量
 adj_r2 <- 1 - (1 - r2) * (n_eff - 1) / df
 f_stat <- (r2 / k) / ((1 - r2) / df)
 f_pvalue <- pf(f_stat, k, df, lower.tail = FALSE)
-std_error_global <- sqrt(var_y * (1 - r2))   # 全局残差标准差，仅参考
+std_error_global <- sqrt(var_y * (1 - r2))
 
-# ---------- 11. 输出结果 ----------
+# 10. 输出结果
 result <- data.frame(
     variable = names(coefs),
     coef = coefs,
@@ -154,7 +173,6 @@ result <- data.frame(
 )
 write.csv(result, file = output_file, row.names = FALSE)
 
-# 统计量汇总
 stats_file <- sub("\\.[^.]*$", "_stats.csv", output_file)
 stats_df <- data.frame(
     r2 = r2,
@@ -166,6 +184,14 @@ stats_df <- data.frame(
 )
 write.csv(stats_df, file = stats_file, row.names = FALSE)
 
+cat("\n===== 回归结果 =====\n")
+cat("Intercept:", coefs["const"], "\n")
+cat("R²:", r2, "\n")
+cat("Adj R²:", adj_r2, "\n")
+cat("F statistic:", f_stat, ", p-value:", f_pvalue, "\n")
+cat("Std. Error of estimate:", std_error_global, "\n")
+cat("因变量有效样本量 (n_eff):", n_eff, "\n")
+cat("\n系数与标准误:\n")
+print(data.frame(variable = names(coefs), coef = coefs, se = se))
+
 cat("\n========== 完成 ==========\n")
-cat("结果已写入:", output_file, "\n")
-cat("统计量已写入:", stats_file, "\n")
