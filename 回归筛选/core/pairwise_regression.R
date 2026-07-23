@@ -8,7 +8,7 @@ dep_var <- args[2]
 ind_vars <- strsplit(args[3], ",")[[1]]
 output_file <- args[4]
 
-cat("\n========== 成对删除 OLS 回归（精确匹配 SPSS，统一有效样本）==========\n")
+cat("\n========== 成对删除 OLS 回归（SPSS 精确匹配版）==========\n")
 cat("数据文件:", data_file, "\n")
 cat("因变量:", dep_var, "\n")
 cat("自变量:", paste(ind_vars, collapse=", "), "\n")
@@ -21,63 +21,69 @@ for (col in c(dep_var, ind_vars)) {
     }
 }
 
-n_total <- nrow(data)
+# 提取有效样本（因变量非缺失）
+valid_y <- !is.na(data[[dep_var]])
+n_eff <- sum(valid_y)
 k <- length(ind_vars)
 p <- k + 1
 
-# 1. 提取有效样本（因变量非缺失）
-valid_y <- !is.na(data[[dep_var]])
-n_eff <- sum(valid_y)
-cat("因变量非缺失样本数 (n_eff):", n_eff, "\n")
+cat("因变量有效样本数 (n_eff):", n_eff, "\n")
 
-# 2. 构建有效样本的设计矩阵 X 和 y
-X <- cbind(1, as.matrix(data[valid_y, ind_vars]))
-y <- data[[dep_var]][valid_y]
+# 子样本数据
+sub_data <- data[valid_y, ]
+y <- sub_data[[dep_var]]
+X_sub <- sub_data[, ind_vars]   # 不包含截距
 
-# 3. 计算 X'X 和 X'y（均基于有效样本）
-XpX <- t(X) %*% X
-Xpy <- t(X) %*% y
+# 1. 协方差矩阵和均值（基于子样本）
+Sxx <- cov(X_sub)
+Sxy <- cov(X_sub, y)
+var_y <- var(y)
+x_means <- colMeans(X_sub)
+y_mean <- mean(y)
 
-# 4. 求解系数
-coefs <- solve(XpX, Xpy)
+# 2. 回归系数
+beta <- solve(Sxx, Sxy)
+intercept <- y_mean - sum(x_means * beta)
+coefs <- c(intercept, beta)
 names(coefs) <- c("const", ind_vars)
 
-# 5. 残差与 MSE（统一基于有效样本）
-pred <- X %*% coefs
+# 3. 预测值与残差
+pred <- as.matrix(cbind(1, X_sub)) %*% coefs
 res <- y - pred
 MSE <- sum(res^2) / (n_eff - p)
 cat("MSE =", MSE, "\n")
 
-# 6. 标准误（统一使用 XpX 的逆）
-XpX_inv <- solve(XpX)
-se <- sqrt(diag(MSE * XpX_inv))
+# 4. 标准误（关键修正）
+# se = sqrt( MSE * diag(Sxx^{-1}) / (n_eff - 1) )
+Sxx_inv <- solve(Sxx)
+se_beta <- sqrt(MSE * diag(Sxx_inv) / (n_eff - 1))
+# 截距的标准误
+se_intercept <- sqrt(MSE * (1/n_eff + x_means %*% Sxx_inv %*% x_means / (n_eff - 1)))
+se <- c(se_intercept, se_beta)
 names(se) <- c("const", ind_vars)
 
-# 7. 检验统计量
+# 5. 检验统计量
 df <- n_eff - p
 tvals <- coefs / se
 pvals <- 2 * pt(-abs(tvals), df = df)
 ci_lower <- coefs - qt(0.975, df) * se
 ci_upper <- coefs + qt(0.975, df) * se
 
-# 8. 标准化系数（Beta）
-y_sd <- sd(y)
-x_sd <- apply(data[valid_y, ind_vars], 2, sd)
-beta_std <- coefs[-1] * (x_sd / y_sd)
+# 6. 标准化系数 Beta
+y_sd <- sqrt(var_y)
+x_sd <- sqrt(diag(Sxx))
+beta_std <- beta * (x_sd / y_sd)
 beta_std_full <- c(NA, beta_std)
 names(beta_std_full) <- c("const", ind_vars)
 
-# 9. 模型统计量（R² 等）
-Sxx <- cov(data[valid_y, ind_vars])
-Sxy <- cov(data[valid_y, ind_vars], y)
-var_y <- var(y)
-R2 <- as.numeric(t(coefs[-1]) %*% Sxx %*% coefs[-1] / var_y)
+# 7. 模型统计量
+R2 <- as.numeric(t(beta) %*% Sxx %*% beta / var_y)
 adj_R2 <- 1 - (1 - R2) * (n_eff - 1) / (n_eff - p)
 f_stat <- (R2 / k) / ((1 - R2) / (n_eff - p))
 f_pvalue <- pf(f_stat, k, n_eff - p, lower.tail = FALSE)
 std_error <- sqrt(MSE)
 
-# 10. 输出结果
+# 8. 输出结果
 result <- data.frame(
     variable = names(coefs),
     coef = coefs,
