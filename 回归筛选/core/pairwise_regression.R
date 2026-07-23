@@ -8,7 +8,7 @@ dep_var <- args[2]
 ind_vars <- strsplit(args[3], ",")[[1]]
 output_file <- args[4]
 
-cat("\n========== 手动成对删除 OLS 回归（协方差矩阵法，标准误使用 n_eff-1）==========\n")
+cat("\n========== 成对删除回归（标准误使用统一的有效样本量）==========\n")
 cat("数据文件:", data_file, "\n")
 cat("因变量:", dep_var, "\n")
 cat("自变量:", paste(ind_vars, collapse=", "), "\n")
@@ -20,11 +20,11 @@ for (col in c(dep_var, ind_vars)) {
     }
 }
 
-# 计算成对协方差矩阵和均值向量
+# 计算成对协方差矩阵和均值
 cov_matrix <- cov(data, use = "pairwise.complete.obs")
 mean_vec <- colMeans(data, na.rm = TRUE)
 
-# 提取相关部分
+# 提取部分
 Sxx <- cov_matrix[ind_vars, ind_vars]
 Sxy <- cov_matrix[ind_vars, dep_var]
 var_y <- cov_matrix[dep_var, dep_var]
@@ -35,7 +35,6 @@ y_mean <- mean_vec[dep_var]
 beta <- solve(Sxx, Sxy)
 intercept <- y_mean - sum(x_means * beta)
 
-# 有效样本量（因变量非缺失）
 n_eff <- sum(!is.na(data[, dep_var]))
 k <- length(ind_vars)
 df <- n_eff - k - 1
@@ -49,9 +48,11 @@ if (r2 > 1) r2 <- 1
 # 残差方差
 MSE <- var_y * (1 - r2)
 
-# 标准误（使用 n_eff - 1）
+# 标准误：使用 (n_eff - 1) 缩放 Sxx^{-1}
 var_beta <- MSE * solve(Sxx) / (n_eff - 1)
 se_beta <- sqrt(diag(var_beta))
+
+# 截距的标准误
 var_intercept <- MSE * (1/n_eff + x_means %*% solve(Sxx) %*% x_means / (n_eff - 1))
 se_intercept <- sqrt(var_intercept)
 
@@ -72,9 +73,11 @@ x_sd <- sqrt(diag(Sxx))
 beta_std <- beta * (x_sd / y_sd)
 beta_std_full <- c(NA, beta_std)
 
+# 调整 R²
 adj_r2 <- 1 - (1 - r2) * (n_eff - 1) / df
 f_stat <- (r2 / k) / ((1 - r2) / df)
 f_pvalue <- pf(f_stat, k, df, lower.tail = FALSE)
+std_error <- sqrt(MSE)
 
 cat("\n===== 回归结果 =====\n")
 cat("Intercept:", intercept, "\n")
@@ -83,8 +86,8 @@ print(beta)
 cat("R²:", r2, "\n")
 cat("Adj R²:", adj_r2, "\n")
 cat("F statistic:", f_stat, ", p-value:", f_pvalue, "\n")
-cat("Std. Error of estimate:", sqrt(MSE), "\n")
-cat("Effective sample size (n_eff):", n_eff, "\n")
+cat("Std. Error of estimate:", std_error, "\n")
+cat("Effective sample size:", n_eff, "\n")
 
 coef_names <- c("const", ind_vars)
 result <- data.frame(
@@ -107,7 +110,7 @@ stats_df <- data.frame(
   f_value = f_stat,
   f_pvalue = f_pvalue,
   nobs = n_eff,
-  std_error = sqrt(MSE)
+  std_error = std_error
 )
 write.csv(stats_df, file = stats_file, row.names = FALSE)
 
