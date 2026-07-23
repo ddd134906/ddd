@@ -8,80 +8,86 @@ dep_var <- args[2]
 ind_vars <- strsplit(args[3], ",")[[1]]
 output_file <- args[4]
 
-cat("\n========== 成对删除 OLS 回归（SPSS 精确版，使用成对协方差）==========\n")
+cat("\n========== 成对删除 OLS（SPSS 精确版 - 强制使用 n_eff-1）==========\n")
 cat("数据文件:", data_file, "\n")
 cat("因变量:", dep_var, "\n")
 cat("自变量:", paste(ind_vars, collapse=", "), "\n")
 
-# 读取数据
 data <- read.csv(data_file, stringsAsFactors = FALSE)
 for (col in c(dep_var, ind_vars)) {
-    if (!is.numeric(data[[col]])) {
-        data[[col]] <- as.numeric(as.character(data[[col]]))
-    }
+    if (!is.numeric(data[[col]])) data[[col]] <- as.numeric(as.character(data[[col]]))
 }
 
 # 有效样本（因变量非缺失）
 valid_y <- !is.na(data[[dep_var]])
 n_eff <- sum(valid_y)
+n_total <- nrow(data)
 k <- length(ind_vars)
 
-cat("因变量有效样本数 (n_eff):", n_eff, "\n")
+cat("总样本量 (n_total):", n_total, "\n")
+cat("因变量有效样本 (n_eff):", n_eff, "\n")
 
-# 子样本数据
+# 子样本
 sub_data <- data[valid_y, ]
 y <- sub_data[[dep_var]]
-X_sub <- as.matrix(sub_data[, ind_vars])   # 确保矩阵
+X_sub <- as.matrix(sub_data[, ind_vars])
 
-# 1. 协方差矩阵（使用子样本）
-Sxx <- cov(X_sub)           # 自变量协方差矩阵
-Sxy <- cov(X_sub, y)        # 自变量与因变量协方差向量
-var_y <- var(y)             # 因变量方差
-x_means <- colMeans(X_sub)  # 自变量均值
-y_mean <- mean(y)           # 因变量均值
+# 协方差矩阵（基于子样本）
+Sxx <- cov(X_sub)
+Sxy <- cov(X_sub, y)
+var_y <- var(y)
+x_means <- colMeans(X_sub)
+y_mean <- mean(y)
 
-# 2. 回归系数
+# 回归系数
 beta <- solve(Sxx, Sxy)
 intercept <- y_mean - sum(x_means * beta)
 coefs <- c(intercept, beta)
 names(coefs) <- c("const", ind_vars)
 
-# 3. 预测值与残差（用于MSE）
+# 残差与 MSE（自由度 n_eff - k - 1）
 pred <- cbind(1, X_sub) %*% coefs
 res <- y - pred
-MSE <- sum(res^2) / (n_eff - k - 1)   # 自由度 n_eff - k - 1
+MSE <- sum(res^2) / (n_eff - k - 1)
 
-# 4. 标准误（关键修正）
+# 关键修正：标准误强制使用 n_eff - 1
 Sxx_inv <- solve(Sxx)
-# 自变量系数标准误：sqrt(MSE * diag(Sxx_inv) / (n_eff - 1))
 se_beta <- sqrt(MSE * diag(Sxx_inv) / (n_eff - 1))
-# 截距标准误
 se_intercept <- sqrt(MSE * (1/n_eff + x_means %*% Sxx_inv %*% x_means / (n_eff - 1)))
 se <- c(se_intercept, se_beta)
 names(se) <- c("const", ind_vars)
 
-# 5. t检验、p值、置信区间
+# 调试输出（用于核对）
+cat("\n--- 诊断信息 ---\n")
+cat("MSE =", MSE, "\n")
+cat("diag(Sxx_inv):\n")
+print(diag(Sxx_inv))
+cat("se_intercept =", se_intercept, "\n")
+cat("se_beta (前3个):\n")
+print(head(se_beta, 3))
+
+# t检验等
 df <- n_eff - k - 1
 tvals <- coefs / se
 pvals <- 2 * pt(-abs(tvals), df = df)
 ci_lower <- coefs - qt(0.975, df) * se
 ci_upper <- coefs + qt(0.975, df) * se
 
-# 6. 标准化系数 Beta
+# 标准化系数
 y_sd <- sqrt(var_y)
 x_sd <- sqrt(diag(Sxx))
 beta_std <- beta * (x_sd / y_sd)
 beta_std_full <- c(NA, beta_std)
 names(beta_std_full) <- c("const", ind_vars)
 
-# 7. 模型统计量
+# 模型统计量
 R2 <- as.numeric(t(beta) %*% Sxx %*% beta / var_y)
 adj_R2 <- 1 - (1 - R2) * (n_eff - 1) / (n_eff - k - 1)
 f_stat <- (R2 / k) / ((1 - R2) / (n_eff - k - 1))
 f_pvalue <- pf(f_stat, k, n_eff - k - 1, lower.tail = FALSE)
 std_error <- sqrt(MSE)
 
-# 8. 输出结果
+# 输出结果
 result <- data.frame(
     variable = names(coefs),
     coef = coefs,
@@ -110,9 +116,7 @@ cat("\n===== 回归结果 =====\n")
 cat("Intercept:", coefs["const"], "\n")
 cat("R²:", R2, "\n")
 cat("Adj R²:", adj_R2, "\n")
-cat("F statistic:", f_stat, ", p-value:", f_pvalue, "\n")
 cat("Std. Error of estimate:", std_error, "\n")
-cat("有效样本量 (n_eff):", n_eff, "\n")
 cat("\n系数与标准误:\n")
 print(data.frame(variable = names(coefs), coef = coefs, se = se))
 
