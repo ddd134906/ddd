@@ -5,6 +5,7 @@ from scipy import stats
 import subprocess
 import tempfile
 import os
+import sys
 
 def parse_factor_indicator(ind_list, n_factors):
     parsed = []
@@ -26,34 +27,57 @@ def parse_factor_indicator(ind_list, n_factors):
 def _pairwise_regression_with_r(df, dep_var, ind_vars):
     """
     使用 R (lavaan) 通过 subprocess 进行成对删除回归，包含标准化系数。
+    增加详细调试输出，确保 R 脚本被正确执行。
     """
+    import subprocess
+    import tempfile
+    import os
+    import sys
+
+    # 1. 准备数据
     data = df[[dep_var] + ind_vars].dropna(how='all')
     if data.empty:
         raise ValueError("数据全部缺失，无法回归")
 
-    # 创建临时文件
+    print(f"【R成对删除】因变量: {dep_var}, 自变量数: {len(ind_vars)}, 数据行数: {len(data)}")
+
+    # 2. 创建临时文件
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as f_data:
         data.to_csv(f_data, index=False)
         data_path = f_data.name
-
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as f_out:
         coef_path = f_out.name
-
     stats_path = coef_path.replace('.csv', '_stats.csv')
 
-    # 调用 R 脚本
+    # 3. 调用 R 脚本
     r_script = os.path.join(os.path.dirname(__file__), 'pairwise_regression.R')
+    if not os.path.exists(r_script):
+        raise FileNotFoundError(f"R 脚本不存在: {r_script}")
     ind_vars_str = ','.join(ind_vars)
     cmd = ['Rscript', r_script, data_path, dep_var, ind_vars_str, coef_path]
+    print(f"【R成对删除】执行命令: {' '.join(cmd)}")
+
     result = subprocess.run(cmd, capture_output=True, text=True)
+    print(f"【R成对删除】返回码: {result.returncode}")
+    if result.stdout:
+        print("【R成对删除】R 脚本 stdout:\n", result.stdout)
+    if result.stderr:
+        print("【R成对删除】R 脚本 stderr:\n", result.stderr)
+
     if result.returncode != 0:
         raise RuntimeError(f"R 脚本执行失败: {result.stderr}")
 
-    # 读取结果
+    # 4. 检查输出文件
+    if not os.path.exists(coef_path):
+        raise FileNotFoundError(f"系数文件未生成: {coef_path}")
+    if not os.path.exists(stats_path):
+        raise FileNotFoundError(f"统计量文件未生成: {stats_path}")
+
+    # 5. 读取结果
     res_df = pd.read_csv(coef_path)
     stats_df = pd.read_csv(stats_path)
 
-    # 构建返回字典
+    # 6. 构建返回字典
     coeff = pd.Series(res_df['coef'].values, index=res_df['variable'])
     bse = pd.Series(res_df['se'].values, index=res_df['variable'])
     tvals = pd.Series(res_df['t'].values, index=res_df['variable'])
@@ -80,7 +104,7 @@ def _pairwise_regression_with_r(df, dep_var, ind_vars):
         'var_names': list(coeff.index)
     }
 
-    # 清理临时文件
+    # 7. 清理临时文件
     os.unlink(data_path)
     os.unlink(coef_path)
     os.unlink(stats_path)
@@ -112,6 +136,7 @@ def run_regression(df, dep_vars, ind_vars, weight_var=None, center=False,
                 continue
             except Exception as e:
                 print(f"R 成对删除回归失败，回退到整行删除：{e}")
+                # 回退到整行删除
 
         # ---- 整行删除（Python） ----
         y = df[dep]
